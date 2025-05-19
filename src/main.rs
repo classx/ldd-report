@@ -2,6 +2,9 @@ use clap::Parser;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::fs::File;
+use std::io::{self, Seek, SeekFrom};
+use goblin::elf::Elf;
 
 /// Library relation report utility
 #[derive(Parser, Debug)]
@@ -46,8 +49,6 @@ impl Libdir {
                     let path = entry.path();
                     if path.is_file() {
                         if let Ok(metadata) = fs::metadata(&path) {
-                            //let a = metadata.file_type();
-                            println!("type: {:#?}", path);
                             if metadata.is_file() && is_elf(&path) {
                                 self.files.push(Files {
                                     fullpath: path.to_string_lossy().to_string(),
@@ -72,14 +73,37 @@ fn is_elf(path: &Path) -> bool {
     false
 }
 
+fn read_needed_deps(path: &Path) -> io::Result<Vec<String>> {
+    let mut buf = Vec::new();
+    let mut file = File::open(path)?;
+    file.read_to_end(&mut buf)?;
+    let elf = Elf::parse(&buf).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut needed = Vec::new();
+    if let Some(dynamic) = elf.dynamic {
+        for dyn_entry in dynamic.dyns {
+            if dyn_entry.d_tag == goblin::elf::dynamic::DT_NEEDED {
+                if let Some(Ok(strtab)) = elf.dynstrtab.get(dyn_entry.d_val as usize) {
+                    needed.push(strtab.to_string());
+                }
+            }
+        }
+    }
+    Ok(needed)
+}
+
 fn main() {
     let args = Args::parse();
     let mut dir = Libdir::new(args.dir);
     dir.populate_files();
 
     for f in dir.files {
-        print!("FILE: {}", f.fullpath);
+        println!("FILE: {}", f.fullpath);
+        if let Ok(deps) = read_needed_deps(Path::new(&f.fullpath)) {
+            for dep in deps {
+                println!("  DEP: {}", dep);
+            }
+        } else {
+            println!("  ERROR: Could not read dependencies");
+        }
     }
-
-    println!("DONE!");
 }
